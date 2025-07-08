@@ -233,3 +233,112 @@
 (define-read-only (get-next-request-id)
   (var-get next-request-id)
 )
+
+(define-map trust-endorsements
+  { endorser: principal, endorsed: principal }
+  {
+    score: uint,
+    reason: (string-ascii 64),
+    created-at: uint,
+    updated-at: uint
+  }
+)
+
+(define-map trust-scores
+  { identity: principal }
+  {
+    total-score: uint,
+    endorsement-count: uint,
+    last-updated: uint
+  }
+)
+
+(define-public (endorse-identity (endorsed principal) (score uint) (reason (string-ascii 64)))
+  (let ((current-block stacks-block-height))
+    (asserts! (is-some (map-get? identities { owner: endorsed })) ERR_NOT_FOUND)
+    (asserts! (not (is-eq tx-sender endorsed)) ERR_UNAUTHORIZED)
+    (asserts! (and (>= score u1) (<= score u10)) ERR_INVALID_PERMISSION)
+    (let ((existing-endorsement (map-get? trust-endorsements { endorser: tx-sender, endorsed: endorsed })))
+      (if (is-some existing-endorsement)
+        (let ((old-score (get score (unwrap-panic existing-endorsement))))
+          (map-set trust-endorsements
+            { endorser: tx-sender, endorsed: endorsed }
+            {
+              score: score,
+              reason: reason,
+              created-at: (get created-at (unwrap-panic existing-endorsement)),
+              updated-at: current-block
+            }
+          )
+          (update-trust-score endorsed score old-score false)
+        )
+        (begin
+          (map-set trust-endorsements
+            { endorser: tx-sender, endorsed: endorsed }
+            {
+              score: score,
+              reason: reason,
+              created-at: current-block,
+              updated-at: current-block
+            }
+          )
+          (update-trust-score endorsed score u0 true)
+        )
+      )
+    )
+  )
+)
+
+(define-public (remove-endorsement (endorsed principal))
+  (let ((endorsement (unwrap! (map-get? trust-endorsements { endorser: tx-sender, endorsed: endorsed }) ERR_NOT_FOUND)))
+    (map-delete trust-endorsements { endorser: tx-sender, endorsed: endorsed })
+    (update-trust-score endorsed u0 (get score endorsement) false)
+  )
+)
+
+(define-private (update-trust-score (identity principal) (new-score uint) (old-score uint) (is-new bool))
+  (let ((current-trust (default-to { total-score: u0, endorsement-count: u0, last-updated: u0 } 
+                                   (map-get? trust-scores { identity: identity }))))
+    (let ((score-diff (if (> new-score old-score) (- new-score old-score) (- old-score new-score)))
+          (new-total (if (> new-score old-score) 
+                        (+ (get total-score current-trust) score-diff)
+                        (- (get total-score current-trust) score-diff)))
+          (new-count (if is-new 
+                        (+ (get endorsement-count current-trust) u1)
+                        (if (is-eq new-score u0)
+                           (- (get endorsement-count current-trust) u1)
+                           (get endorsement-count current-trust)))))
+      (map-set trust-scores
+        { identity: identity }
+        {
+          total-score: new-total,
+          endorsement-count: new-count,
+          last-updated: stacks-block-height
+        }
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-read-only (get-trust-score (identity principal))
+  (map-get? trust-scores { identity: identity })
+)
+
+(define-read-only (get-endorsement (endorser principal) (endorsed principal))
+  (map-get? trust-endorsements { endorser: endorser, endorsed: endorsed })
+)
+
+(define-read-only (calculate-reputation-rating (identity principal))
+  (let ((trust-data (map-get? trust-scores { identity: identity })))
+    (if (is-some trust-data)
+      (let ((data (unwrap-panic trust-data)))
+        (if (> (get endorsement-count data) u0)
+          (/ (get total-score data) (get endorsement-count data))
+          u0
+        )
+      )
+      u0
+    )
+  )
+)
