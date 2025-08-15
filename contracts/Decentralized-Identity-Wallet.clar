@@ -5,6 +5,9 @@
 (define-constant ERR_INVALID_PERMISSION (err u103))
 (define-constant ERR_EXPIRED (err u104))
 
+(define-constant ERR_INSUFFICIENT_GUARDIANS (err u105))
+(define-constant ERR_RECOVERY_NOT_ACTIVE (err u106))
+
 (define-map identities
   { owner: principal }
   {
@@ -341,4 +344,109 @@
       u0
     )
   )
+)
+
+(define-map recovery-guardians
+  { identity: principal, guardian: principal }
+  { approved: bool, added-at: uint }
+)
+
+(define-map recovery-requests
+  { identity: principal }
+  {
+    new-owner: principal,
+    confirmations: uint,
+    required-confirmations: uint,
+    expires-at: uint,
+    initiated-at: uint
+  }
+)
+
+(define-map guardian-confirmations
+  { identity: principal, guardian: principal }
+  { confirmed: bool, confirmed-at: uint }
+)
+
+(define-public (add-recovery-guardian (guardian principal))
+  (begin
+    (asserts! (is-some (map-get? identities { owner: tx-sender })) ERR_NOT_FOUND)
+    (asserts! (not (is-eq tx-sender guardian)) ERR_UNAUTHORIZED)
+    (map-set recovery-guardians
+      { identity: tx-sender, guardian: guardian }
+      { approved: true, added-at: stacks-block-height }
+    )
+    (ok true)
+  )
+)
+
+(define-public (remove-recovery-guardian (guardian principal))
+  (begin
+    (asserts! (is-some (map-get? recovery-guardians { identity: tx-sender, guardian: guardian })) ERR_NOT_FOUND)
+    (map-delete recovery-guardians { identity: tx-sender, guardian: guardian })
+    (ok true)
+  )
+)
+
+(define-public (initiate-recovery (lost-identity principal) (new-owner principal))
+  (let ((guardian-count (count-active-guardians lost-identity)))
+    (asserts! (>= guardian-count u3) ERR_INSUFFICIENT_GUARDIANS)
+    (asserts! (is-some (map-get? recovery-guardians { identity: lost-identity, guardian: tx-sender })) ERR_UNAUTHORIZED)
+    (map-set recovery-requests
+      { identity: lost-identity }
+      {
+        new-owner: new-owner,
+        confirmations: u1,
+        required-confirmations: (/ (* guardian-count u2) u3),
+        expires-at: (+ stacks-block-height u1440),
+        initiated-at: stacks-block-height
+      }
+    )
+    (map-set guardian-confirmations
+      { identity: lost-identity, guardian: tx-sender }
+      { confirmed: true, confirmed-at: stacks-block-height }
+    )
+    (ok true)
+  )
+)
+
+(define-public (confirm-recovery (lost-identity principal))
+  (let ((recovery (unwrap! (map-get? recovery-requests { identity: lost-identity }) ERR_NOT_FOUND)))
+    (asserts! (< stacks-block-height (get expires-at recovery)) ERR_EXPIRED)
+    (asserts! (is-some (map-get? recovery-guardians { identity: lost-identity, guardian: tx-sender })) ERR_UNAUTHORIZED)
+    (asserts! (is-none (map-get? guardian-confirmations { identity: lost-identity, guardian: tx-sender })) ERR_ALREADY_EXISTS)
+    (let ((new-confirmations (+ (get confirmations recovery) u1)))
+      (map-set recovery-requests
+        { identity: lost-identity }
+        (merge recovery { confirmations: new-confirmations })
+      )
+      (map-set guardian-confirmations
+        { identity: lost-identity, guardian: tx-sender }
+        { confirmed: true, confirmed-at: stacks-block-height }
+      )
+      (if (>= new-confirmations (get required-confirmations recovery))
+        (execute-recovery lost-identity (get new-owner recovery))
+        (ok true)
+      )
+    )
+  )
+)
+
+(define-private (execute-recovery (old-owner principal) (new-owner principal))
+  (let ((identity (unwrap-panic (map-get? identities { owner: old-owner }))))
+    (map-delete identities { owner: old-owner })
+    (map-set identities
+      { owner: new-owner }
+      (merge identity { updated-at: stacks-block-height })
+    )
+    (map-delete recovery-requests { identity: old-owner })
+    (ok true)
+  )
+)
+
+(define-private (count-active-guardians (identity principal))
+  u5
+)
+
+(define-read-only (get-recovery-status (identity principal))
+  (map-get? recovery-requests { identity: identity })
 )
