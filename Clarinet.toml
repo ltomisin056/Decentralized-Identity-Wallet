@@ -1,0 +1,32 @@
+[project]
+name = 'Decentralized-Identity-Wallet'
+description = ''
+authors = []
+telemetry = true
+cache_dir = '.\.cache'
+requirements = []
+[contracts.Decentralized-Identity-Wallet]
+path = 'contracts/Decentralized-Identity-Wallet.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.identity-delegation]
+path = 'contracts/identity-delegation.clar'
+clarity_version = 3
+epoch = 3.1
+[contracts.identity-audit-log]
+path = 'contracts/identity-audit-log.clar'
+clarity_version = 3
+epoch = 3.1
+[repl.analysis]
+passes = ['check_checker']
+
+[repl.analysis.check_checker]
+strict = false
+trusted_sender = false
+trusted_caller = false
+callee_filter = false
+
+[repl.remote_data]
+enabled = false
+api_url = 'https://api.hiro.so'
